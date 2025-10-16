@@ -32,12 +32,13 @@ app.post('/create-order', async (req, res) => {
           phone: customer_phone,
           first_name: customer_name,
           last_name: "(COD Form)",
-          country: "Algeria" // تأكد من أن هذا هو بلدك
+          country: "Algeria"
         },
         financial_status: 'pending',
         gateway: 'Cash on Delivery (COD)',
         note: `تم الطلب من فورم COD. العنوان: ${shipping_address}`,
-        tags: "COD, Custom Form"
+        tags: "COD, Custom Form",
+        inventory_behaviour: 'decrement_obeying_policy'
       }
     };
     
@@ -49,23 +50,30 @@ app.post('/create-order', async (req, res) => {
 
     const orderData = await orderResponse.json();
 
-    // --== هذا هو الكود الجديد والمهم لتسجيل كل شيء ==--
-    console.log("--- FULL SHOPIFY RESPONSE ---");
-    console.log(`Response Status: ${orderResponse.status}`);
-    console.log("Response Body:", JSON.stringify(orderData, null, 2));
-    console.log("-----------------------------");
-    // --== نهاية كود التسجيل ==--
-
     if (!orderResponse.ok) {
-      throw new Error('Shopify API returned a non-OK status. Check the logs above for the full response from Shopify.');
+      console.error('SHOPIFY ERROR:', JSON.stringify(orderData, null, 2));
+      throw new Error('Shopify API returned an error.');
     }
     
-    if (!orderData.order || !orderData.order.name) {
-        throw new Error("Shopify returned OK status, but the response did not contain the expected order object.");
+    // --== الإصلاح الذكي للتعامل مع الاستجابة كقائمة أو كائن ==--
+    let createdOrder;
+    if (orderData.order) {
+        // الحالة الطبيعية
+        createdOrder = orderData.order;
+    } else if (orderData.orders && orderData.orders.length > 0) {
+        // الحالة الغريبة التي حدثت معك (قائمة)
+        console.log("Shopify returned a list of orders, taking the first one.");
+        createdOrder = orderData.orders[0];
     }
 
-    console.log(`Order ${orderData.order.name} created successfully.`);
-    res.status(200).json({ success: true, order: orderData.order });
+    if (!createdOrder) {
+        console.error("Could not find the created order in Shopify's response:", JSON.stringify(orderData, null, 2));
+        throw new Error("Invalid response structure from Shopify.");
+    }
+    // --== نهاية الإصلاح ==--
+
+    console.log(`Order ${createdOrder.name} created successfully.`);
+    res.status(200).json({ success: true, order: createdOrder });
 
   } catch (error) {
     console.error('SERVER ERROR:', error.message);
