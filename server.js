@@ -16,63 +16,56 @@ app.post('/create-order', async (req, res) => {
       return res.status(400).json({ success: false, message: 'Missing data.' });
     }
     
-    const draftOrderPayload = {
-      draft_order: {
+    // إنشاء كائن الطلب مباشرة
+    const orderPayload = {
+      order: {
+        // تحديد المنتج
         line_items: [{ 
           variant_id: product_variant_id, 
           quantity: 1 
         }],
-        note: `عنوان الزبون: ${shipping_address}`,
+        // معلومات الزبون
         customer: {
           first_name: customer_name,
           last_name: "(COD Form)",
           phone: customer_phone
-        }
+        },
+        // معلومات الشحن
+        shipping_address: {
+          address1: shipping_address,
+          phone: customer_phone,
+          first_name: customer_name,
+          last_name: "(COD Form)",
+          country: "Algeria" // مهم: غيّر هذا إذا كان بلدك مختلفاً
+        },
+        // معلومات الدفع والشحن
+        financial_status: 'pending', // مهم جداً للدفع عند الاستلام
+        gateway: 'Cash on Delivery (COD)',
+        // معلومات إضافية لجعل الطلب يبدو حقيقياً
+        note: `تم الطلب من فورم COD. العنوان: ${shipping_address}`,
+        tags: "COD, Custom Form",
+        inventory_behaviour: 'decrement_obeying_policy' // لإنقاص المخزون
       }
     };
     
-    const draftResponse = await fetch(`${SHOPIFY_STORE_URL}/admin/api/2024-04/draft_orders.json`, {
+    // إرسال الطلب مباشرة إلى شوبيفاي
+    const orderResponse = await fetch(`${SHOPIFY_STORE_URL}/admin/api/2024-04/orders.json`, {
       method: 'POST',
       headers: { 'Content-Type': 'application/json', 'X-Shopify-Access-Token': SHOPIFY_ACCESS_TOKEN },
-      body: JSON.stringify(draftOrderPayload)
+      body: JSON.stringify(orderPayload)
     });
 
-    const draftData = await draftResponse.json();
+    const orderData = await orderResponse.json();
 
-    if (!draftResponse.ok) {
-      console.error('DRAFT CREATION ERROR:', JSON.stringify(draftData, null, 2));
-      throw new Error('Failed to create draft order.');
-    }
-
-    // --== الإصلاح الذكي هنا ==--
-    // شوبيفاي يرجع أحياناً قائمة. سنتعامل مع الكائن مباشرة أو نأخذ أول عنصر من القائمة.
-    let createdDraftOrder = draftData.draft_order;
-    if (!createdDraftOrder && draftData.draft_orders && draftData.draft_orders.length > 0) {
-        console.log("Shopify returned a list, taking the first item.");
-        createdDraftOrder = draftData.draft_orders[0];
-    }
-
-    if (!createdDraftOrder || !createdDraftOrder.id) {
-        console.error("Could not find the created draft order in Shopify's response:", JSON.stringify(draftData, null, 2));
-        throw new Error("Invalid response from Shopify after creating draft order.");
-    }
-
-    const draftOrderId = createdDraftOrder.id;
-    console.log(`Draft Order ${draftOrderId} identified. Completing...`);
-
-    const completeResponse = await fetch(`${SHOPIFY_STORE_URL}/admin/api/2024-04/draft_orders/${draftOrderId}/complete.json?payment_pending=true`, {
-      method: 'PUT',
-      headers: { 'X-Shopify-Access-Token': SHOPIFY_ACCESS_TOKEN }
-    });
-
-    const completeData = await completeResponse.json();
-    if (!completeResponse.ok) {
-      console.error('DRAFT COMPLETION ERROR:', JSON.stringify(completeData, null, 2));
-      throw new Error('Failed to complete draft order.');
+    if (!orderResponse.ok) {
+      console.error('--- DIRECT ORDER CREATION ERROR ---');
+      console.error(JSON.stringify(orderData, null, 2));
+      console.error('------------------------------------');
+      throw new Error('Shopify rejected the direct order creation.');
     }
     
-    console.log(`Order ${completeData.draft_order.order_id} created successfully.`);
-    res.status(200).json({ success: true, order_id: completeData.draft_order.order_id });
+    console.log(`Order ${orderData.order.name} created successfully.`);
+    res.status(200).json({ success: true, order: orderData.order });
 
   } catch (error) {
     console.error('SERVER ERROR:', error.message);
