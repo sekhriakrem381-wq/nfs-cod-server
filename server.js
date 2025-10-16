@@ -18,6 +18,7 @@ app.post('/create-order', async (req, res) => {
     
     const orderPayload = {
       order: {
+        source_name: "web", // السطر الجديد لضمان ظهور الطلب
         line_items: [{ 
           variant_id: product_variant_id, 
           quantity: 1 
@@ -55,14 +56,10 @@ app.post('/create-order', async (req, res) => {
       throw new Error('Shopify API returned an error.');
     }
     
-    // --== الإصلاح الذكي للتعامل مع الاستجابة كقائمة أو كائن ==--
     let createdOrder;
     if (orderData.order) {
-        // الحالة الطبيعية
         createdOrder = orderData.order;
     } else if (orderData.orders && orderData.orders.length > 0) {
-        // الحالة الغريبة التي حدثت معك (قائمة)
-        console.log("Shopify returned a list of orders, taking the first one.");
         createdOrder = orderData.orders[0];
     }
 
@@ -70,7 +67,6 @@ app.post('/create-order', async (req, res) => {
         console.error("Could not find the created order in Shopify's response:", JSON.stringify(orderData, null, 2));
         throw new Error("Invalid response structure from Shopify.");
     }
-    // --== نهاية الإصلاح ==--
 
     console.log(`Order ${createdOrder.name} created successfully.`);
     res.status(200).json({ success: true, order: createdOrder });
