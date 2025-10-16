@@ -9,23 +9,17 @@ const SHOPIFY_STORE_URL = process.env.SHOPIFY_STORE_URL;
 const SHOPIFY_ACCESS_TOKEN = process.env.SHOPIFY_ACCESS_TOKEN;
 
 app.post('/create-order', async (req, res) => {
-  console.log("--- NEW REQUEST RECEIVED ---");
   try {
     const { product_variant_id, customer_name, customer_phone, shipping_address } = req.body;
 
-    // --== خطوة تشخيص 1: طباعة البيانات المستلمة ==--
-    console.log("Received variant ID:", product_variant_id);
-    console.log("Received customer name:", customer_name);
-
     if (!product_variant_id || !customer_name || !customer_phone || !shipping_address) {
-      console.error("Error: Missing data from form.");
       return res.status(400).json({ success: false, message: 'Missing data.' });
     }
     
     const draftOrderPayload = {
       draft_order: {
         line_items: [{ 
-          variant_id: parseInt(product_variant_id), // التأكد من أنه رقم
+          variant_id: parseInt(product_variant_id), 
           quantity: 1 
         }],
         note: `عنوان الزبون: ${shipping_address}`,
@@ -37,35 +31,40 @@ app.post('/create-order', async (req, res) => {
       }
     };
     
-    // --== خطوة تشخيص 2: طباعة البيانات قبل إرسالها ==--
-    console.log("Payload being sent to Shopify:", JSON.stringify(draftOrderPayload, null, 2));
-
     const draftResponse = await fetch(`${SHOPIFY_STORE_URL}/admin/api/2024-04/draft_orders.json`, {
       method: 'POST',
       headers: { 'Content-Type': 'application/json', 'X-Shopify-Access-Token': SHOPIFY_ACCESS_TOKEN },
       body: JSON.stringify(draftOrderPayload)
     });
 
-    const responseStatus = draftResponse.status;
-    const responseData = await draftResponse.json();
-
-    // --== خطوة تشخيص 3: طباعة استجابة شوبيفاي الكاملة ==--
-    console.log("--- SHOPIFY API RESPONSE ---");
-    console.log("STATUS:", responseStatus);
-    console.log("BODY:", JSON.stringify(responseData, null, 2));
-    console.log("----------------------------");
+    const draftData = await draftResponse.json();
 
     if (!draftResponse.ok) {
-      throw new Error(`Shopify returned an error status: ${responseStatus}`);
+      console.error('SHOPIFY ERROR:', JSON.stringify(draftData, null, 2));
+      throw new Error('Shopify API returned an error.');
+    }
+    
+    // --== الإصلاح الذكي للتعامل مع الاستجابة كقائمة أو كائن ==--
+    let createdDraft;
+    if (draftData.draft_order) {
+        // الحالة الطبيعية
+        createdDraft = draftData.draft_order;
+    } else if (draftData.draft_orders && draftData.draft_orders.length > 0) {
+        // الحالة الغريبة التي حدثت معك (قائمة). نأخذ أول عنصر لأنه الأحدث.
+        console.log("Shopify returned a list of drafts, taking the first one.");
+        createdDraft = draftData.draft_orders[0];
     }
 
-    if (!responseData.draft_order || !responseData.draft_order.id) {
-        throw new Error("Shopify response did not contain draft_order.id");
+    if (!createdDraft || !createdDraft.id) {
+        console.error("Could not find the created draft in Shopify's response:", JSON.stringify(draftData, null, 2));
+        throw new Error("Invalid response structure from Shopify.");
     }
+    // --== نهاية الإصلاح ==--
 
-    const draftOrderId = responseData.draft_order.id;
-    console.log(`Draft Order ${draftOrderId} created. Completing...`);
+    const draftOrderId = createdDraft.id;
+    console.log(`Draft Order ${draftOrderId} identified. Completing...`);
 
+    // --- إكمال الطلب المبدئي ---
     const completeResponse = await fetch(`${SHOPIFY_STORE_URL}/admin/api/2024-04/draft_orders/${draftOrderId}/complete.json?payment_pending=true`, {
       method: 'PUT',
       headers: { 'X-Shopify-Access-Token': SHOPIFY_ACCESS_TOKEN }
@@ -77,9 +76,8 @@ app.post('/create-order', async (req, res) => {
       throw new Error('Failed to complete draft order.');
     }
     
-    const finalOrder = completeData.draft_order;
-    console.log(`Successfully created order ID: ${finalOrder.order_id}.`);
-    res.status(200).json({ success: true, order_id: finalOrder.order_id });
+    console.log(`Order ${completeData.draft_order.order_id} created successfully.`);
+    res.status(200).json({ success: true, order_id: completeData.draft_order.order_id });
 
   } catch (error) {
     console.error('SERVER ERROR:', error.message);
