@@ -39,17 +39,26 @@ app.post('/create-order', async (req, res) => {
 
     const draftData = await draftResponse.json();
 
-    // --== الكود الجديد والمهم لتشخيص الخطأ ==--
-    if (!draftResponse.ok || !draftData.draft_order || !draftData.draft_order.id) {
-      console.error('--- DRAFT CREATION FAILED ---');
-      console.error('--- Shopify Sent Back This Response: ---');
-      console.error(JSON.stringify(draftData, null, 2));
-      console.error('------------------------------------');
-      throw new Error('Shopify rejected the draft order creation. See logs for details.');
+    if (!draftResponse.ok) {
+      console.error('DRAFT CREATION ERROR:', JSON.stringify(draftData, null, 2));
+      throw new Error('Failed to create draft order.');
     }
 
-    const draftOrderId = draftData.draft_order.id;
-    console.log(`Draft Order ${draftOrderId} created.`);
+    // --== الإصلاح الذكي هنا ==--
+    // شوبيفاي يرجع أحياناً قائمة. سنتعامل مع الكائن مباشرة أو نأخذ أول عنصر من القائمة.
+    let createdDraftOrder = draftData.draft_order;
+    if (!createdDraftOrder && draftData.draft_orders && draftData.draft_orders.length > 0) {
+        console.log("Shopify returned a list, taking the first item.");
+        createdDraftOrder = draftData.draft_orders[0];
+    }
+
+    if (!createdDraftOrder || !createdDraftOrder.id) {
+        console.error("Could not find the created draft order in Shopify's response:", JSON.stringify(draftData, null, 2));
+        throw new Error("Invalid response from Shopify after creating draft order.");
+    }
+
+    const draftOrderId = createdDraftOrder.id;
+    console.log(`Draft Order ${draftOrderId} identified. Completing...`);
 
     const completeResponse = await fetch(`${SHOPIFY_STORE_URL}/admin/api/2024-04/draft_orders/${draftOrderId}/complete.json?payment_pending=true`, {
       method: 'PUT',
