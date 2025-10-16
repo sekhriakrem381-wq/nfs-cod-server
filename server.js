@@ -38,9 +38,14 @@ app.post('/create-order', async (req, res) => {
     });
 
     const draftData = await draftResponse.json();
-    if (!draftResponse.ok) {
-      console.error('DRAFT CREATION ERROR:', JSON.stringify(draftData, null, 2));
-      throw new Error('Failed to create draft order.');
+
+    // --== الكود الجديد والمهم لتشخيص الخطأ ==--
+    if (!draftResponse.ok || !draftData.draft_order || !draftData.draft_order.id) {
+      console.error('--- DRAFT CREATION FAILED ---');
+      console.error('--- Shopify Sent Back This Response: ---');
+      console.error(JSON.stringify(draftData, null, 2));
+      console.error('------------------------------------');
+      throw new Error('Shopify rejected the draft order creation. See logs for details.');
     }
 
     const draftOrderId = draftData.draft_order.id;
