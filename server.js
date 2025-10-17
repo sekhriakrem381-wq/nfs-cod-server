@@ -12,61 +12,57 @@ app.post('/create-order', async (req, res) => {
   try {
     const { product_variant_id, customer_name, customer_phone, shipping_address } = req.body;
 
-    console.log("--- NEW REQUEST ---");
-    console.log("Received Variant ID:", product_variant_id);
-
     if (!product_variant_id || !customer_name || !customer_phone || !shipping_address) {
       return res.status(400).json({ success: false, message: 'Missing data.' });
     }
     
-    const orderPayload = {
-      order: {
-        source_name: "web",
+    // --- الخطوة 1: إنشاء طلب مبدئي (Draft Order) ---
+    const draftOrderPayload = {
+      draft_order: {
         line_items: [{ 
           variant_id: parseInt(product_variant_id), 
           quantity: 1 
         }],
+        note: `عنوان الزبون: ${shipping_address}`,
         customer: {
           first_name: customer_name,
-          last_name: "(COD Form)"
-        },
-        phone: customer_phone, // وضع رقم الهاتف على مستوى الطلب مهم
-        shipping_address: {
-          address1: shipping_address,
-          first_name: customer_name,
           last_name: "(COD Form)",
-          country: "Algeria" // تأكد من صحة البلد
-        },
-        financial_status: 'pending',
-        note: `تم الطلب من فورم COD. العنوان: ${shipping_address}`
+          phone: customer_phone
+        }
       }
     };
-
-    console.log("Sending payload to Shopify...");
     
-    const orderResponse = await fetch(`${SHOPIFY_STORE_URL}/admin/api/2024-04/orders.json`, {
+    const draftResponse = await fetch(`${SHOPIFY_STORE_URL}/admin/api/2024-04/draft_orders.json`, {
       method: 'POST',
       headers: { 'Content-Type': 'application/json', 'X-Shopify-Access-Token': SHOPIFY_ACCESS_TOKEN },
-      body: JSON.stringify(orderPayload)
+      body: JSON.stringify(draftOrderPayload)
     });
 
-    const orderData = await orderResponse.json();
+    const draftData = await draftResponse.json();
+    if (!draftResponse.ok) {
+      console.error('DRAFT CREATION ERROR:', JSON.stringify(draftData, null, 2));
+      throw new Error('Failed to create draft order.');
+    }
+
+    // --- الخطوة 2: الحصول على ID الطلب المبدئي ---
+    const draftOrderId = draftData.draft_order.id;
+    console.log(`Draft Order ${draftOrderId} created.`);
+
+    // --- الخطوة 3 (النهائية): إكمال الطلب المبدئي لتحويله إلى طلب حقيقي ---
+    const completeResponse = await fetch(`${SHOPIFY_STORE_URL}/admin/api/2024-04/draft_orders/${draftOrderId}/complete.json?payment_pending=true`, {
+      method: 'PUT',
+      headers: { 'X-Shopify-Access-Token': SHOPIFY_ACCESS_TOKEN }
+    });
+
+    const completeData = await completeResponse.json();
+    if (!completeResponse.ok) {
+      console.error('DRAFT COMPLETION ERROR:', JSON.stringify(completeData, null, 2));
+      throw new Error('Failed to complete draft order.');
+    }
     
-    console.log("--- SHOPIFY RESPONSE ---");
-    console.log("STATUS:", orderResponse.status);
-    console.log("BODY:", JSON.stringify(orderData, null, 2));
-    console.log("------------------------");
-
-    if (!orderResponse.ok) {
-      throw new Error(`Shopify rejected order creation with status ${orderResponse.status}.`);
-    }
-
-    if (!orderData.order || !orderData.order.id) {
-        throw new Error("Shopify returned a success status but no order object was found.");
-    }
-
-    console.log(`Successfully created order ${orderData.order.name}.`);
-    res.status(200).json({ success: true, order: orderData.order });
+    const finalOrder = completeData.draft_order;
+    console.log(`Successfully created order ID: ${finalOrder.order_id}.`);
+    res.status(200).json({ success: true, order_id: finalOrder.order_id });
 
   } catch (error) {
     console.error('SERVER ERROR:', error.message);
