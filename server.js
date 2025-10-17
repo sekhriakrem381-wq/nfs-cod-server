@@ -12,19 +12,20 @@ app.post('/create-order', async (req, res) => {
   try {
     const { product_variant_id, customer_name, customer_phone, shipping_address } = req.body;
 
-    if (!product_variant_id) {
-      return res.status(400).json({ success: false, message: 'Missing product variant ID.' });
+    if (!product_variant_id || !customer_name || !customer_phone || !shipping_address) {
+      return res.status(400).json({ success: false, message: 'Missing data.' });
     }
     
+    // --- الخطوة 1: إنشاء طلب مبدئي (Draft Order) ---
     const draftOrderPayload = {
       draft_order: {
         line_items: [{ 
-          variant_id: product_variant_id, 
+          variant_id: parseInt(product_variant_id), 
           quantity: 1 
         }],
-        note: `Customer Address: ${shipping_address}`,
+        note: `عنوان الزبون: ${shipping_address}`,
         customer: {
-          first_name: customer_name || "Guest",
+          first_name: customer_name,
           last_name: "(COD Form)",
           phone: customer_phone
         }
@@ -37,23 +38,31 @@ app.post('/create-order', async (req, res) => {
       body: JSON.stringify(draftOrderPayload)
     });
 
-    // This is the most important part. We will now log everything.
-    const responseStatus = draftResponse.status;
-    const responseData = await draftResponse.json();
-
-    console.log("--- SHOPIFY API RESPONSE ---");
-    console.log("STATUS:", responseStatus);
-    console.log("BODY:", JSON.stringify(responseData, null, 2));
-    console.log("----------------------------");
-
-    // We will check the response manually to find the error.
-    if (responseStatus >= 400) {
-        throw new Error(`Shopify returned an error status: ${responseStatus}`);
+    const draftData = await draftResponse.json();
+    if (!draftResponse.ok) {
+      console.error('DRAFT CREATION ERROR:', JSON.stringify(draftData, null, 2));
+      throw new Error('Failed to create draft order.');
     }
 
-    // If we get this far, it means the draft order was created.
-    // For this test, we will not complete the order yet.
-    res.status(200).json({ success: true, message: "Draft order created successfully. Check your Drafts folder in Shopify." });
+    // --- الخطوة 2: الحصول على ID الطلب المبدئي ---
+    const draftOrderId = draftData.draft_order.id;
+    console.log(`Draft Order ${draftOrderId} created.`);
+
+    // --- الخطوة 3 (النهائية): إكمال الطلب المبدئي لتحويله إلى طلب حقيقي ---
+    const completeResponse = await fetch(`${SHOPIFY_STORE_URL}/admin/api/2024-04/draft_orders/${draftOrderId}/complete.json?payment_pending=true`, {
+      method: 'PUT',
+      headers: { 'X-Shopify-Access-Token': SHOPIFY_ACCESS_TOKEN }
+    });
+
+    const completeData = await completeResponse.json();
+    if (!completeResponse.ok) {
+      console.error('DRAFT COMPLETION ERROR:', JSON.stringify(completeData, null, 2));
+      throw new Error('Failed to complete draft order.');
+    }
+    
+    const finalOrder = completeData.draft_order;
+    console.log(`Successfully created order ID: ${finalOrder.order_id}.`);
+    res.status(200).json({ success: true, order_id: finalOrder.order_id });
 
   } catch (error) {
     console.error('SERVER ERROR:', error.message);
