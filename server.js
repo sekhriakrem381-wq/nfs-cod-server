@@ -1,92 +1,140 @@
-const express = require('express');
-const cors = require('cors');
+// server.js
+import express from 'express';
+import fetch from 'node-fetch'; // لو Node18+ تقدر تستخدم global fetch
+import crypto from 'crypto';
 
 const app = express();
-app.use(cors());
 app.use(express.json());
 
-const SHOPIFY_STORE_URL = process.env.SHOPIFY_STORE_URL;
-const SHOPIFY_ACCESS_TOKEN = process.env.SHOPIFY_ACCESS_TOKEN;
+// اقرأ هذي المتغيرات من environment
+const SHOP_DOMAIN = process.env.https://nfsstore.online/; // e.g. your-store.myshopify.com
+const SHOP_TOKEN = process.env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.; // shpat_xxx...
+const PORT = process.env.PORT || 3000;
+
+if (!SHOP_DOMAIN || !SHOP_TOKEN) {
+  console.error('Missing SHOP_DOMAIN or SHOPIFY_ADMIN_TOKEN env vars');
+  process.exit(1);
+}
+
+// Simple in-memory idempotency cache (for demo). In production استخدم cache persistent (Redis).
+const recentHashes = new Map();
+
+function makeHash(obj) {
+  return crypto.createHash('sha256').update(JSON.stringify(obj)).digest('hex');
+}
 
 app.post('/create-order', async (req, res) => {
   try {
-    const { product_variant_id, customer_name, customer_phone, shipping_address } = req.body;
+    const {
+      customer_name,
+      phone,
+      state,
+      municipality,
+      variant_id,
+      quantity = 1,
+      shipping_fee = 0,
+      product_handle,
+      meta_pixel_id
+    } = req.body;
 
-    if (!product_variant_id || !customer_name || !customer_phone || !shipping_address) {
-      return res.status(400).json({ success: false, message: 'Missing data.' });
+    if (!customer_name || !phone || !variant_id) {
+      return res.status(400).json({ message: 'payload incomplete' });
     }
-    
-    const draftOrderPayload = {
-      draft_order: {
-        line_items: [{ 
-          variant_id: parseInt(product_variant_id), 
-          quantity: 1 
-        }],
-        note: `عنوان الزبون: ${shipping_address}`,
-        customer: {
-          first_name: customer_name,
-          last_name: "(COD Form)",
-          phone: customer_phone
-        }
+
+    // Idempotency: hash phone+variant+qty+timestamp-window (60s) to avoid dups
+    const idHash = makeHash({ phone, variant_id, quantity, product_handle, municipality });
+    if (recentHashes.has(idHash)) {
+      return res.status(200).json({ message: 'duplicate', info: 'order recently created', order_reference: recentHashes.get(idHash) });
+    }
+
+    // split name
+    const nameParts = customer_name.trim().split(' ');
+    const firstName = nameParts.shift() || '';
+    const lastName = nameParts.join(' ') || '';
+
+    // build order object
+    const orderPayload = {
+      order: {
+        line_items: [
+          {
+            variant_id: Number(variant_id),
+            quantity: Number(quantity),
+            properties: {
+              lead_name: customer_name,
+              lead_phone: phone,
+              lead_state: state,
+              lead_municipality: municipality,
+              from_widget: 'lead-cod-widget'
+            }
+          }
+        ],
+        shipping_lines: [
+          {
+            title: "توصيل - الدفع عند الاستلام",
+            price: String(Number(shipping_fee) || 0),
+            code: "COD"
+          }
+        ],
+        billing_address: {
+          first_name: firstName,
+          last_name: lastName,
+          phone: phone,
+          address1: municipality || '',
+          city: state || '',
+          country: "Algeria"
+        },
+        shipping_address: {
+          first_name: firstName,
+          last_name: lastName,
+          phone: phone,
+          address1: municipality || '',
+          city: state || '',
+          country: "Algeria"
+        },
+        email: null,
+        financial_status: "pending",
+        transactions: [],
+        note: `Lead COD — widget. Tel: ${phone}`,
+        payment_gateway_names: ["Cash on Delivery"],
+        tags: "lead_form,cod"
       }
     };
-    
-    const draftResponse = await fetch(`${SHOPIFY_STORE_URL}/admin/api/2024-04/draft_orders.json`, {
+
+    const url = `https://${SHOP_DOMAIN}/admin/api/2024-10/orders.json`;
+    const response = await fetch(url, {
       method: 'POST',
-      headers: { 'Content-Type': 'application/json', 'X-Shopify-Access-Token': SHOPIFY_ACCESS_TOKEN },
-      body: JSON.stringify(draftOrderPayload)
+      headers: {
+        'Content-Type': 'application/json',
+        'X-Shopify-Access-Token': SHOP_TOKEN
+      },
+      body: JSON.stringify(orderPayload)
     });
 
-    const draftData = await draftResponse.json();
-
-    if (!draftResponse.ok) {
-      console.error('SHOPIFY ERROR (DRAFT CREATION):', JSON.stringify(draftData, null, 2));
-      throw new Error('Shopify API returned an error during draft creation.');
-    }
-    
-    // --== الإصلاح الذكي للتعامل مع كل أنواع الاستجابات ==--
-    let createdDraft;
-    if (draftData.draft_order) {
-        // الحالة الطبيعية والمتوقعة
-        createdDraft = draftData.draft_order;
-    } else if (draftData.draft_orders && draftData.draft_orders.length > 0) {
-        // الحالة الغريبة التي رأيناها (قائمة)
-        console.log("Shopify returned a list of drafts, attempting to find the newest one.");
-        // نفترض أن الأحدث هو الأول
-        createdDraft = draftData.draft_orders[0];
+    const data = await response.json();
+    if (!response.ok) {
+      console.error('Shopify API error', data);
+      return res.status(500).json({ message: 'Shopify API error', details: data });
     }
 
-    if (!createdDraft || !createdDraft.id) {
-        console.error("CRITICAL ERROR: Could not find a valid draft order object in Shopify's response:", JSON.stringify(draftData, null, 2));
-        throw new Error("Invalid response structure from Shopify after creating draft order.");
-    }
-    // --== نهاية الإصلاح ==--
+    const order = data.order;
+    // save idempotency short-term
+    recentHashes.set(idHash, order.order_number || order.id);
+    setTimeout(()=> recentHashes.delete(idHash), 60 * 1000); // keep 60s
 
-    const draftOrderId = createdDraft.id;
-    console.log(`Draft Order ${draftOrderId} identified. Proceeding to complete...`);
-
-    const completeResponse = await fetch(`${SHOPIFY_STORE_URL}/admin/api/2024-04/draft_orders/${draftOrderId}/complete.json?payment_pending=true`, {
-      method: 'PUT',
-      headers: { 'X-Shopify-Access-Token': SHOPIFY_ACCESS_TOKEN }
+    return res.json({
+      success: true,
+      id: order.id,
+      order_number: order.order_number,
+      total: order.total_price,
+      currency: order.currency
     });
 
-    const completeData = await completeResponse.json();
-    if (!completeResponse.ok) {
-      console.error('SHOPIFY ERROR (DRAFT COMPLETION):', JSON.stringify(completeData, null, 2));
-      throw new Error('Failed to complete draft order.');
-    }
-    
-    const finalOrder = completeData.draft_order;
-    console.log(`Successfully completed draft, created Order ID: ${finalOrder.order_id}.`);
-    res.status(200).json({ success: true, order_id: finalOrder.order_id });
-
-  } catch (error) {
-    console.error('SERVER RUNTIME ERROR:', error.message);
-    res.status(500).json({ success: false, message: 'Internal server error.' });
+  } catch (err) {
+    console.error(err);
+    return res.status(500).json({ message: 'server error', error: err.message });
   }
 });
 
-const PORT = process.env.PORT || 3000;
-app.listen(PORT, () => {
-  console.log(`Server is running on port ${PORT}.`);
-});
+app.get('/', (req,res) => res.send('OK - Lead COD Endpoint'));
+
+app.listen(PORT, () => console.log(`Server listening on port ${PORT}`));
